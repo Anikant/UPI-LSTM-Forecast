@@ -87,7 +87,12 @@ train_dates = df["ds"].iloc[:-test_days].values
 test_dates = df["ds"].iloc[-test_days:].values
 
 model, scaler = train_lstm(train_series, lookback=lookback, epochs=500)
-
+print("=== DEBUG hist_for_test ===")
+print(type(hist_for_test))
+print(hist_for_test.shape if hasattr(hist_for_test, 'shape') else len(hist_for_test))
+print("Sample:", hist_for_test[-5:])
+print("NaNs:", np.isnan(hist_for_test).sum() if hasattr(hist_for_test, 'shape') else "No shape")
+print("========================")
 # Forecast on test window to compute error
 # Build supervised only for train+test to align sequences
 hist_for_test = y_all[:-test_days + lookback]
