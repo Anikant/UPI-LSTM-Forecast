@@ -1,7 +1,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import timedelta
+from datetime import timedelta 
+import sys
+from pathlib import Path
+
+# Ensure project root is on sys.path when run via `streamlit run app/streamlit_app.py`
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.data_utils import load_series, make_supervised
 from src.model_lstm import train_lstm
