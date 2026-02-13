@@ -84,7 +84,7 @@ test_series = y_all[-test_days:]
 train_dates = df["ds"].iloc[:-test_days].values
 test_dates = df["ds"].iloc[-test_days:].values
 
-model, scaler = train_lstm(train_series, lookback=lookback, epochs=epochs)
+model, scaler = train_lstm(train_series, lookback=lookback, epochs=500)
 
 # Forecast on test window to compute error
 # Build supervised only for train+test to align sequences
