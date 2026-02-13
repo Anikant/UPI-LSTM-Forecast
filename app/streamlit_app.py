@@ -26,30 +26,37 @@ def humanize(n: float) -> str:
     return f"{int(n)}"
 
 def rolling_forecast(model, scaler, history, horizon, lookback):
-    """Fixed for new scaler - handles numeric conversion"""
-    # FORCE numeric + right shape
-    history = np.asarray(history, dtype=np.float32).flatten()  # 1D numeric
+    """Bulletproof version - handles ANY input"""
+    
+    # Convert to numeric array, remove NaNs, flatten
+    history = np.asarray(history).flatten()
+    history = history[~np.isnan(history)]  # Remove NaNs
+    history = history.astype(np.float64)
+    
+    print(f"DEBUG: history after cleaning: {history.shape}, sample: {history[-3:]}")
     
     if len(history) < lookback:
-        raise ValueError(f"History {len(history)} < lookback {lookback}")
+        raise ValueError(f"Clean history len={len(history)} < lookback={lookback}")
     
-    # Transform last window (scaler expects (n_samples, 1))
-    window = history[-lookback:].reshape(-1, 1)  # (lookback, 1)
-    context_scaled = scaler.transform(window).flatten()
+    # Scale LAST lookback values (shape: (lookback, 1))
+    window = history[-lookback:].reshape(1, -1)  # (1, lookback)
+    window_scaled = scaler.transform(window).flatten()
     
+    context = window_scaled.copy()
     preds_scaled = []
-    context = context_scaled.copy()
     
-    for _ in range(horizon):
-        x = context[-lookback:][None, :, None]  # (1, lookback, 1)
-        y_hat = model.predict(x, verbose=0)[0, 0]
-        preds_scaled.append(y_hat)
-        context = np.append(context, y_hat)
+    for i in range(horizon):
+        x_input = context[-lookback:].reshape(1, lookback, 1)
+        y_pred_scaled = model.predict(x_input, verbose=0)[0][0]
+        preds_scaled.append(y_pred_scaled)
+        context = np.append(context, y_pred_scaled)
     
-    # Inverse transform
-    preds = np.array(preds_scaled).reshape(-1, 1)
-    return scaler.inverse_transform(preds).flatten()
-
+    # Inverse scale predictions
+    preds_array = np.array(preds_scaled).reshape(-1, 1)
+    preds = scaler.inverse_transform(preds_array).flatten()
+    
+    print(f"DEBUG: Generated {len(preds)} predictions: {preds[:3]} -> {preds[-3:]}")
+    return preds
 # --- App ----------------------------------------------------
 
 st.set_page_config(page_title="UPI LSTM Forecast", layout="wide")
