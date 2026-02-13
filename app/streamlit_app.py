@@ -26,34 +26,29 @@ def humanize(n: float) -> str:
     return f"{int(n)}"
 
 def rolling_forecast(model, scaler, history, horizon, lookback):
-    """Multi-step forecast from last lookback points of 'history'."""
-    history = np.asarray(history, dtype=np.float32)
+    """Fixed for new scaler - handles numeric conversion"""
+    # FORCE numeric + right shape
+    history = np.asarray(history, dtype=np.float32).flatten()  # 1D numeric
     
-    # Check scaler features and adapt input shape
-    n_features = getattr(scaler, 'n_features_in_', 1)
-    if n_features == 1:
-        # Single feature scaler (raw series)
-        hist_scaled = scaler.transform(history.reshape(-1, 1)).flatten()
-    else:
-        # Multi-feature scaler (supervised data) - use last window
-        if len(history) < lookback:
-            raise ValueError(f"History length {len(history)} < lookback {lookback}")
-        window = history[-lookback:].reshape(1, -1)  # (1, lookback)
-        hist_scaled = scaler.transform(window).flatten()
+    if len(history) < lookback:
+        raise ValueError(f"History {len(history)} < lookback {lookback}")
     
-    context = hist_scaled[-lookback:].copy()
+    # Transform last window (scaler expects (n_samples, 1))
+    window = history[-lookback:].reshape(-1, 1)  # (lookback, 1)
+    context_scaled = scaler.transform(window).flatten()
+    
     preds_scaled = []
+    context = context_scaled.copy()
     
     for _ in range(horizon):
         x = context[-lookback:][None, :, None]  # (1, lookback, 1)
-        y_hat_scaled = model.predict(x, verbose=0)[0, 0]
-        preds_scaled.append(y_hat_scaled)
-        context = np.append(context, y_hat_scaled)
+        y_hat = model.predict(x, verbose=0)[0, 0]
+        preds_scaled.append(y_hat)
+        context = np.append(context, y_hat)
     
-    # Inverse transform with matching shape
+    # Inverse transform
     preds = np.array(preds_scaled).reshape(-1, 1)
-    preds_inv = scaler.inverse_transform(preds).flatten()
-    return preds_inv
+    return scaler.inverse_transform(preds).flatten()
 
 # --- App ----------------------------------------------------
 
