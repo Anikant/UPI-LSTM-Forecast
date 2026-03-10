@@ -17,26 +17,27 @@ st.title("UPI Transaction Forecast Engine")
 st.sidebar.header("Forecast Settings")
 
 daily_projection = st.sidebar.checkbox(
-    "Enable Daily Projection (Prophet Model)"
+    "Enable Daily Projection"
 )
 
 if daily_projection:
 
     forecast_days = st.sidebar.slider(
         "Daily Forecast Horizon (Days)",
-        min_value=7,
-        max_value=180,
-        value=30
+        7,
+        180,
+        30
     )
 
 else:
 
     forecast_months = st.sidebar.slider(
         "Monthly Forecast Horizon (Months)",
-        min_value=1,
-        max_value=24,
-        value=6
+        1,
+        24,
+        6
     )
+
 
 @st.cache_data
 def load_monthly_data():
@@ -72,6 +73,9 @@ def load_daily_data():
     return df
 
 
+# ==============================
+# MONTHLY MODE (LSTM)
+# ==============================
 if not daily_projection:
 
     df = load_monthly_data()
@@ -87,7 +91,7 @@ if not daily_projection:
 
     scaler = MinMaxScaler()
 
-    data_scaled = scaler.fit_transform(series.values.reshape(-1, 1))
+    data_scaled = scaler.fit_transform(series.values.reshape(-1,1))
 
     lookback = 12
 
@@ -135,6 +139,9 @@ if not daily_projection:
     series_plot = series
 
 
+# ==============================
+# DAILY MODE (IMPROVED PROPHET)
+# ==============================
 else:
 
     df = load_daily_data()
@@ -155,10 +162,23 @@ else:
 
     model_df.rename(columns={selected_field: "y"}, inplace=True)
 
+    # capacity limit to avoid aggressive growth
+    model_df["cap"] = model_df["y"].max() * 1.2
+
     model = Prophet(
+        growth="logistic",
         yearly_seasonality=True,
         weekly_seasonality=True,
-        daily_seasonality=False
+        daily_seasonality=False,
+        changepoint_prior_scale=0.05,
+        seasonality_prior_scale=10
+    )
+
+    # monthly payment seasonality
+    model.add_seasonality(
+        name="monthly",
+        period=30.5,
+        fourier_order=5
     )
 
     model.fit(model_df)
@@ -166,6 +186,8 @@ else:
     future = model.make_future_dataframe(
         periods=forecast_days
     )
+
+    future["cap"] = model_df["cap"].iloc[0]
 
     forecast = model.predict(future)
 
@@ -179,15 +201,18 @@ else:
 
     max_idx = forecast_df["yhat"].idxmax()
 
-    max_day = forecast_df.loc[max_idx, "ds"]
+    max_day = forecast_df.loc[max_idx,"ds"]
 
-    max_val = forecast_df.loc[max_idx, "yhat"]
+    max_val = forecast_df.loc[max_idx,"yhat"]
 
     st.write(
         f"Maximum Projected Day: {max_day.date()} | Value: {round(max_val,2)}"
     )
 
 
+# ==============================
+# GRAPH
+# ==============================
 fig = go.Figure()
 
 recent = series_plot.tail(30)
@@ -216,6 +241,9 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 
+# ==============================
+# FORECAST TABLE WITH GROWTH %
+# ==============================
 last_actual = series_plot.iloc[-1]
 
 growth_pct = ((np.array(future_vals) - last_actual) / last_actual) * 100
