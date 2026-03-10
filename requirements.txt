@@ -1,7 +1,8 @@
 streamlit
 pandas
 numpy
-openpyxl
+plotly
 tensorflow
 scikit-learn
 prophet
+openpyxl
