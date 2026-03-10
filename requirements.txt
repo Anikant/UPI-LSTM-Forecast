@@ -4,3 +4,4 @@ numpy
 openpyxl
 tensorflow
 scikit-learn
+prophet
