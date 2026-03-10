@@ -1,5 +1,4 @@
 import os
-import random
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -7,11 +6,9 @@ import plotly.graph_objects as go
 import tensorflow as tf
 
 from prophet import Prophet
-
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
 
 # =====================================================
 # STREAMLIT CONFIG
@@ -23,25 +20,31 @@ st.title("UPI Transaction Forecast Engine")
 # =====================================================
 # SIDEBAR
 # =====================================================
-daily_projection = st.sidebar.toggle(
-    "Enable Daily Projection"
+st.sidebar.header("Forecast Settings")
+
+daily_projection = st.sidebar.checkbox(
+    "Enable Daily Projection (Prophet Model)"
 )
 
 # =====================================================
-# SLIDERS
+# FORECAST HORIZON
 # =====================================================
 if daily_projection:
 
     forecast_days = st.sidebar.slider(
-        "Select Forecast Days",
-        7, 180, 30
+        "Daily Forecast Horizon (Days)",
+        min_value=7,
+        max_value=180,
+        value=30
     )
 
 else:
 
     forecast_months = st.sidebar.slider(
-        "Select Forecast Months",
-        1, 24, 6
+        "Monthly Forecast Horizon (Months)",
+        min_value=1,
+        max_value=24,
+        value=6
     )
 
 # =====================================================
@@ -82,30 +85,7 @@ def load_daily_data():
 
 
 # =====================================================
-# HOLIDAYS (same as notebook)
-# =====================================================
-def get_india_holidays(start, end):
-
-    dates = pd.date_range(start, end)
-
-    holidays = []
-
-    for d in dates:
-
-        if d.month == 10 and d.day in [2, 24]:
-            holidays.append(d)
-
-        if d.month == 11 and d.day in [12, 14]:
-            holidays.append(d)
-
-    return pd.DataFrame({
-        "ds": holidays,
-        "holiday": "india_festival"
-    })
-
-
-# =====================================================
-# MONTHLY MODE (UNCHANGED LSTM)
+# MONTHLY MODE (LSTM)
 # =====================================================
 if not daily_projection:
 
@@ -114,7 +94,7 @@ if not daily_projection:
     fields = ["Remitter", "Benificiary", "Total"]
 
     selected_field = st.sidebar.selectbox(
-        "Select Projection Field",
+        "Select Monthly Projection Field",
         fields
     )
 
@@ -122,29 +102,31 @@ if not daily_projection:
 
     scaler = MinMaxScaler()
 
-    data_scaled = scaler.fit_transform(series.values.reshape(-1,1))
+    data_scaled = scaler.fit_transform(series.values.reshape(-1, 1))
 
     lookback = 12
 
-    X,y = [],[]
+    X, y = [], []
 
-    for i in range(lookback,len(data_scaled)):
+    for i in range(lookback, len(data_scaled)):
+
         X.append(data_scaled[i-lookback:i])
+
         y.append(data_scaled[i])
 
     X = np.array(X)
     y = np.array(y)
 
     model = Sequential([
-        LSTM(64,return_sequences=True,input_shape=(lookback,1)),
+        LSTM(64, return_sequences=True, input_shape=(lookback,1)),
         Dropout(0.2),
         LSTM(32),
         Dense(1)
     ])
 
-    model.compile(optimizer="adam",loss="mse")
+    model.compile(optimizer="adam", loss="mse")
 
-    model.fit(X,y,epochs=100,batch_size=8,verbose=0)
+    model.fit(X, y, epochs=100, batch_size=8, verbose=0)
 
     seq = data_scaled[-lookback:]
 
@@ -152,11 +134,11 @@ if not daily_projection:
 
     for _ in range(forecast_months):
 
-        p = model.predict(seq.reshape(1,lookback,1),verbose=0)[0]
+        p = model.predict(seq.reshape(1,lookback,1), verbose=0)[0]
 
         preds.append(p)
 
-        seq = np.append(seq[1:],p)
+        seq = np.append(seq[1:], p)
 
     preds = scaler.inverse_transform(preds)
 
@@ -169,34 +151,35 @@ if not daily_projection:
 
     series_plot = series
 
+
 # =====================================================
-# DAILY MODE (NOTEBOOK PROPHET LOGIC)
+# DAILY MODE (PROPHET)
 # =====================================================
 else:
 
     df = load_daily_data()
 
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    # Only allow transaction columns
+    invalid_cols = ["month", "year", "day"]
+
+    numeric_cols = [
+        c for c in df.select_dtypes(include=[np.number]).columns
+        if c.lower() not in invalid_cols
+    ]
 
     selected_field = st.sidebar.selectbox(
-        "Select Daily Field",
+        "Select Daily Projection Field",
         numeric_cols
     )
 
-    model_df = df[["ds",selected_field]].copy()
+    model_df = df[["ds", selected_field]].copy()
 
-    model_df.rename(columns={selected_field:"y"},inplace=True)
-
-    holidays = get_india_holidays(
-        model_df["ds"].min(),
-        model_df["ds"].max()
-    )
+    model_df.rename(columns={selected_field: "y"}, inplace=True)
 
     model = Prophet(
         yearly_seasonality=True,
         weekly_seasonality=True,
-        daily_seasonality=False,
-        holidays=holidays
+        daily_seasonality=False
     )
 
     model.fit(model_df)
@@ -215,29 +198,30 @@ else:
 
     series_plot = model_df.set_index("ds")["y"]
 
-    # ================= MAX DAY =================
+    # Max projection
     max_idx = forecast_df["yhat"].idxmax()
 
-    max_day = forecast_df.loc[max_idx,"ds"]
+    max_day = forecast_df.loc[max_idx, "ds"]
 
-    max_val = forecast_df.loc[max_idx,"yhat"]
+    max_val = forecast_df.loc[max_idx, "yhat"]
 
     st.success(
         f"Maximum Projected Day: {max_day.date()} | Value: {round(max_val,2)}"
     )
+
 
 # =====================================================
 # GRAPH
 # =====================================================
 fig = go.Figure()
 
-recent = series_plot.last("30D")
+recent = series_plot.tail(30)
 
 fig.add_trace(go.Scatter(
     x=recent.index,
     y=recent.values,
     mode="lines",
-    name="Last 30 Days"
+    name="Actual"
 ))
 
 fig.add_trace(go.Scatter(
@@ -249,19 +233,23 @@ fig.add_trace(go.Scatter(
 
 fig.update_layout(
     template="plotly_white",
-    height=550
+    height=550,
+    xaxis_title="Date",
+    yaxis_title="Transactions"
 )
 
-st.plotly_chart(fig,use_container_width=True)
+st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
 # FORECAST TABLE
 # =====================================================
 forecast_table = pd.DataFrame({
-    "Date":future_dates,
-    "Forecast":future_vals
+    "Date": future_dates,
+    "Forecast": future_vals
 })
 
-st.dataframe(forecast_table)
+st.markdown("### Forecast Table")
+
+st.dataframe(forecast_table, use_container_width=True)
 
 st.success("Forecast generated successfully.")
