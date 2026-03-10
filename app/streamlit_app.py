@@ -10,25 +10,16 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 
-# =====================================================
-# STREAMLIT CONFIG
-# =====================================================
 st.set_page_config(page_title="UPI Forecast Engine", layout="wide")
 
 st.title("UPI Transaction Forecast Engine")
 
-# =====================================================
-# SIDEBAR
-# =====================================================
 st.sidebar.header("Forecast Settings")
 
 daily_projection = st.sidebar.checkbox(
     "Enable Daily Projection (Prophet Model)"
 )
 
-# =====================================================
-# FORECAST HORIZON
-# =====================================================
 if daily_projection:
 
     forecast_days = st.sidebar.slider(
@@ -47,9 +38,6 @@ else:
         value=6
     )
 
-# =====================================================
-# DATA LOADERS
-# =====================================================
 @st.cache_data
 def load_monthly_data():
 
@@ -84,9 +72,6 @@ def load_daily_data():
     return df
 
 
-# =====================================================
-# MONTHLY MODE (LSTM)
-# =====================================================
 if not daily_projection:
 
     df = load_monthly_data()
@@ -109,9 +94,7 @@ if not daily_projection:
     X, y = [], []
 
     for i in range(lookback, len(data_scaled)):
-
         X.append(data_scaled[i-lookback:i])
-
         y.append(data_scaled[i])
 
     X = np.array(X)
@@ -152,14 +135,10 @@ if not daily_projection:
     series_plot = series
 
 
-# =====================================================
-# DAILY MODE (PROPHET)
-# =====================================================
 else:
 
     df = load_daily_data()
 
-    # Only allow transaction columns
     invalid_cols = ["month", "year", "day"]
 
     numeric_cols = [
@@ -198,21 +177,17 @@ else:
 
     series_plot = model_df.set_index("ds")["y"]
 
-    # Max projection
     max_idx = forecast_df["yhat"].idxmax()
 
     max_day = forecast_df.loc[max_idx, "ds"]
 
     max_val = forecast_df.loc[max_idx, "yhat"]
 
-    st.success(
+    st.write(
         f"Maximum Projected Day: {max_day.date()} | Value: {round(max_val,2)}"
     )
 
 
-# =====================================================
-# GRAPH
-# =====================================================
 fig = go.Figure()
 
 recent = series_plot.tail(30)
@@ -240,12 +215,15 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# =====================================================
-# FORECAST TABLE
-# =====================================================
+
+last_actual = series_plot.iloc[-1]
+
+growth_pct = ((np.array(future_vals) - last_actual) / last_actual) * 100
+
 forecast_table = pd.DataFrame({
     "Date": future_dates,
-    "Forecast": future_vals
+    "Forecast": future_vals,
+    "Growth %": growth_pct
 })
 
 st.markdown("### Forecast Table")
