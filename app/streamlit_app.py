@@ -16,21 +16,16 @@ st.title("UPI Transaction Forecast Engine")
 
 st.sidebar.header("Forecast Settings")
 
-daily_projection = st.sidebar.checkbox(
-    "Enable Daily Projection"
-)
+daily_projection = st.sidebar.checkbox("Enable Daily Projection")
 
 if daily_projection:
-
     forecast_days = st.sidebar.slider(
         "Daily Forecast Horizon (Days)",
         7,
-        180,
+        120,
         30
     )
-
 else:
-
     forecast_months = st.sidebar.slider(
         "Monthly Forecast Horizon (Months)",
         1,
@@ -38,13 +33,14 @@ else:
         6
     )
 
+# ---------------------------------------------------
+# DATA LOADERS
+# ---------------------------------------------------
 
 @st.cache_data
 def load_monthly_data():
 
-    path = "data/UPI_Transactions.xlsx"
-
-    df = pd.read_excel(path)
+    df = pd.read_excel("data/UPI_Transactions.xlsx")
 
     df["Date"] = pd.to_datetime(df["Date"])
 
@@ -58,9 +54,7 @@ def load_monthly_data():
 @st.cache_data
 def load_daily_data():
 
-    path = "data/merged_upi_transactions.xlsx"
-
-    df = pd.read_excel(path)
+    df = pd.read_excel("data/merged_upi_transactions.xlsx")
 
     df.columns = df.columns.str.strip()
 
@@ -73,9 +67,10 @@ def load_daily_data():
     return df
 
 
-# ==============================
-# MONTHLY MODE (LSTM)
-# ==============================
+# ---------------------------------------------------
+# MONTHLY MODEL
+# ---------------------------------------------------
+
 if not daily_projection:
 
     df = load_monthly_data()
@@ -91,15 +86,15 @@ if not daily_projection:
 
     scaler = MinMaxScaler()
 
-    data_scaled = scaler.fit_transform(series.values.reshape(-1,1))
+    scaled = scaler.fit_transform(series.values.reshape(-1,1))
 
     lookback = 12
 
     X, y = [], []
 
-    for i in range(lookback, len(data_scaled)):
-        X.append(data_scaled[i-lookback:i])
-        y.append(data_scaled[i])
+    for i in range(lookback, len(scaled)):
+        X.append(scaled[i-lookback:i])
+        y.append(scaled[i])
 
     X = np.array(X)
     y = np.array(y)
@@ -113,9 +108,9 @@ if not daily_projection:
 
     model.compile(optimizer="adam", loss="mse")
 
-    model.fit(X, y, epochs=100, batch_size=8, verbose=0)
+    model.fit(X, y, epochs=80, batch_size=8, verbose=0)
 
-    seq = data_scaled[-lookback:]
+    seq = scaled[-lookback:]
 
     preds = []
 
@@ -127,21 +122,29 @@ if not daily_projection:
 
         seq = np.append(seq[1:], p)
 
-    preds = scaler.inverse_transform(preds)
+    preds = scaler.inverse_transform(preds).flatten()
+
+    # stabilize projection
+    recent_mean = series.tail(6).mean()
+
+    preds = 0.6 * preds + 0.4 * recent_mean
+
+    preds = pd.Series(preds).rolling(2, min_periods=1).mean().values
 
     future_dates = [
         series.index[-1] + pd.DateOffset(months=i+1)
         for i in range(forecast_months)
     ]
 
-    future_vals = preds.flatten()
+    future_vals = preds
 
     series_plot = series
 
 
-# ==============================
-# DAILY MODE (IMPROVED PROPHET)
-# ==============================
+# ---------------------------------------------------
+# DAILY MODEL (ENSEMBLE)
+# ---------------------------------------------------
+
 else:
 
     df = load_daily_data()
@@ -160,59 +163,114 @@ else:
 
     model_df = df[["ds", selected_field]].copy()
 
-    model_df.rename(columns={selected_field: "y"}, inplace=True)
+    model_df.rename(columns={selected_field:"y"}, inplace=True)
 
-    # capacity limit to avoid aggressive growth
-    model_df["cap"] = model_df["y"].max() * 1.2
+    # capacity limits
+    model_df["cap"] = model_df["y"].max() * 1.1
+    model_df["floor"] = model_df["y"].min() * 0.95
 
-    model = Prophet(
+    # --------------------------
+    # PROPHET MODEL
+    # --------------------------
+
+    prophet = Prophet(
         growth="logistic",
         yearly_seasonality=True,
         weekly_seasonality=True,
         daily_seasonality=False,
-        changepoint_prior_scale=0.05,
-        seasonality_prior_scale=10
+        changepoint_prior_scale=0.01,
+        seasonality_prior_scale=3
     )
 
-    # monthly payment seasonality
-    model.add_seasonality(
+    prophet.add_seasonality(
         name="monthly",
         period=30.5,
-        fourier_order=5
+        fourier_order=3
     )
 
-    model.fit(model_df)
+    prophet.fit(model_df)
 
-    future = model.make_future_dataframe(
-        periods=forecast_days
-    )
+    future = prophet.make_future_dataframe(periods=forecast_days)
 
     future["cap"] = model_df["cap"].iloc[0]
+    future["floor"] = model_df["floor"].iloc[0]
 
-    forecast = model.predict(future)
+    prophet_forecast = prophet.predict(future)
 
-    forecast_df = forecast[["ds","yhat"]].tail(forecast_days)
+    prophet_vals = prophet_forecast["yhat"].tail(forecast_days).values
 
-    future_dates = forecast_df["ds"]
+    # --------------------------
+    # LSTM MODEL
+    # --------------------------
 
-    future_vals = forecast_df["yhat"]
+    series = model_df["y"]
+
+    scaler = MinMaxScaler()
+
+    scaled = scaler.fit_transform(series.values.reshape(-1,1))
+
+    lookback = 30
+
+    X, y = [], []
+
+    for i in range(lookback, len(scaled)):
+        X.append(scaled[i-lookback:i])
+        y.append(scaled[i])
+
+    X = np.array(X)
+    y = np.array(y)
+
+    lstm = Sequential([
+        LSTM(32, return_sequences=True, input_shape=(lookback,1)),
+        LSTM(16),
+        Dense(1)
+    ])
+
+    lstm.compile(optimizer="adam", loss="mse")
+
+    lstm.fit(X, y, epochs=50, batch_size=16, verbose=0)
+
+    seq = scaled[-lookback:]
+
+    lstm_preds = []
+
+    for _ in range(forecast_days):
+
+        p = lstm.predict(seq.reshape(1,lookback,1), verbose=0)[0]
+
+        lstm_preds.append(p)
+
+        seq = np.append(seq[1:], p)
+
+    lstm_vals = scaler.inverse_transform(lstm_preds).flatten()
+
+    # --------------------------
+    # ENSEMBLE
+    # --------------------------
+
+    future_vals = 0.6 * prophet_vals + 0.4 * lstm_vals
+
+    future_vals = pd.Series(future_vals).rolling(2, min_periods=1).mean().values
+
+    future_dates = prophet_forecast["ds"].tail(forecast_days)
 
     series_plot = model_df.set_index("ds")["y"]
 
-    max_idx = forecast_df["yhat"].idxmax()
+    max_idx = np.argmax(future_vals)
 
-    max_day = forecast_df.loc[max_idx,"ds"]
+    max_day = future_dates.iloc[max_idx]
 
-    max_val = forecast_df.loc[max_idx,"yhat"]
+    max_val = future_vals[max_idx]
 
     st.write(
         f"Maximum Projected Day: {max_day.date()} | Value: {round(max_val,2)}"
     )
 
 
-# ==============================
+# ---------------------------------------------------
 # GRAPH
-# ==============================
+# ---------------------------------------------------
+
 fig = go.Figure()
 
 recent = series_plot.tail(30)
@@ -240,10 +298,10 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
+# ---------------------------------------------------
+# FORECAST TABLE
+# ---------------------------------------------------
 
-# ==============================
-# FORECAST TABLE WITH GROWTH %
-# ==============================
 last_actual = series_plot.iloc[-1]
 
 growth_pct = ((np.array(future_vals) - last_actual) / last_actual) * 100
