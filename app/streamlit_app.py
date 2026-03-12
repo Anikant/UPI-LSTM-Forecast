@@ -2,32 +2,31 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-
 from prophet import Prophet
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
 
 st.set_page_config(page_title="UPI Forecast Engine", layout="wide")
 
 st.title("UPI Transaction Forecast Engine")
 
-# -----------------------------------------------------
+# --------------------------------------------------
 # SIDEBAR
-# -----------------------------------------------------
+# --------------------------------------------------
 
 st.sidebar.header("Forecast Settings")
 
 daily_projection = st.sidebar.checkbox("Enable Daily Projection")
 
 if daily_projection:
+
     forecast_days = st.sidebar.slider(
         "Daily Forecast Horizon (Days)",
         7,
         120,
         30
     )
+
 else:
+
     forecast_months = st.sidebar.slider(
         "Monthly Forecast Horizon (Months)",
         1,
@@ -35,48 +34,93 @@ else:
         6
     )
 
-# -----------------------------------------------------
-# HOLIDAY DATA
-# -----------------------------------------------------
+# --------------------------------------------------
+# INDIA HOLIDAYS 2026
+# --------------------------------------------------
 
 def get_holidays():
 
     holidays = pd.DataFrame({
+
         "holiday":[
-            "new_year","mlk","presidents","memorial",
-            "independence","labor","columbus",
-            "thanksgiving","christmas"
+        "new_year",
+        "makar_sankranti",
+        "republic_day",
+        "maha_shivratri",
+        "holi",
+        "ugadi",
+        "eid_ul_fitr",
+        "ram_navami",
+        "mahavir_jayanti",
+        "good_friday",
+        "buddha_purnima",
+        "labour_day",
+        "bakri_eid",
+        "muharram",
+        "rath_yatra",
+        "independence_day",
+        "onam",
+        "milad_un_nabi",
+        "raksha_bandhan",
+        "janmashtami",
+        "vinayaka_chaturthi",
+        "gandhi_jayanti",
+        "dussehra",
+        "diwali",
+        "guru_nanak_jayanti",
+        "christmas"
         ],
+
         "ds":pd.to_datetime([
-            "2026-01-01",
-            "2026-01-19",
-            "2026-02-16",
-            "2026-05-25",
-            "2026-07-04",
-            "2026-09-07",
-            "2026-10-12",
-            "2026-11-26",
-            "2026-12-25"
+
+        "2026-01-01",
+        "2026-01-14",
+        "2026-01-26",
+        "2026-02-15",
+        "2026-03-04",
+        "2026-03-19",
+        "2026-03-21",
+        "2026-03-26",
+        "2026-03-31",
+        "2026-04-03",
+        "2026-05-01",
+        "2026-05-01",
+        "2026-05-27",
+        "2026-06-26",
+        "2026-07-16",
+        "2026-08-15",
+        "2026-08-26",
+        "2026-08-26",
+        "2026-08-28",
+        "2026-09-04",
+        "2026-09-14",
+        "2026-10-02",
+        "2026-10-20",
+        "2026-11-08",
+        "2026-11-24",
+        "2026-12-25"
         ])
     })
 
     return holidays
 
-# -----------------------------------------------------
+
+# --------------------------------------------------
 # OUTLIER FILTER
-# -----------------------------------------------------
+# --------------------------------------------------
 
 def remove_outliers(series):
 
-    z = (series - series.mean()) / series.std()
+    z = (series-series.mean())/series.std()
 
-    series[z.abs() > 3] = series.rolling(7).median()
+    series[z.abs()>3] = series.rolling(7).median()
 
     return series
 
-# -----------------------------------------------------
-# DATA LOADING
-# -----------------------------------------------------
+
+# --------------------------------------------------
+# DATA LOAD
+# --------------------------------------------------
 
 @st.cache_data
 def load_daily():
@@ -107,9 +151,10 @@ def load_monthly():
 
     return df
 
-# -----------------------------------------------------
-# MONTHLY MODEL
-# -----------------------------------------------------
+
+# --------------------------------------------------
+# MONTHLY FORECAST
+# --------------------------------------------------
 
 if not daily_projection:
 
@@ -121,30 +166,33 @@ if not daily_projection:
 
     series = remove_outliers(series)
 
-    growth = np.log(series / series.shift(1)).dropna()
+    growth = np.log(series/series.shift(1)).dropna()
 
-    avg_growth = growth.mean()
-
-    future_vals = []
+    avg_growth = growth.mean()*0.6
 
     last_val = series.iloc[-1]
 
-    for _ in range(forecast_months):
+    preds = []
 
-        last_val = last_val * (1 + avg_growth*0.7)
+    for i in range(forecast_months):
 
-        future_vals.append(last_val)
+        last_val = last_val*(1+avg_growth)
+
+        preds.append(last_val)
+
+    future_vals = np.array(preds)
 
     future_dates = [
-        series.index[-1] + pd.DateOffset(months=i+1)
+        series.index[-1]+pd.DateOffset(months=i+1)
         for i in range(forecast_months)
     ]
 
     history = series
 
-# -----------------------------------------------------
-# DAILY MODEL
-# -----------------------------------------------------
+
+# --------------------------------------------------
+# DAILY FORECAST
+# --------------------------------------------------
 
 else:
 
@@ -158,14 +206,14 @@ else:
 
     data["y"] = remove_outliers(data["y"])
 
-    # -----------------------
-    # PROPHET
-    # -----------------------
+    # prophet model
 
     prophet = Prophet(
         holidays=get_holidays(),
         changepoint_prior_scale=0.02,
-        seasonality_prior_scale=5
+        seasonality_prior_scale=5,
+        weekly_seasonality=True,
+        yearly_seasonality=True
     )
 
     prophet.fit(data)
@@ -176,78 +224,29 @@ else:
 
     prophet_vals = forecast["yhat"].tail(forecast_days).values
 
-    # -----------------------
-    # LSTM
-    # -----------------------
+    # growth model
 
     series = data["y"]
 
-    scaler = MinMaxScaler()
+    growth = np.log(series/series.shift(1)).dropna()
 
-    scaled = scaler.fit_transform(series.values.reshape(-1,1))
-
-    lookback = 30
-
-    X,y=[],[]
-
-    for i in range(lookback,len(scaled)):
-        X.append(scaled[i-lookback:i])
-        y.append(scaled[i])
-
-    X=np.array(X)
-    y=np.array(y)
-
-    lstm = Sequential([
-        LSTM(32,return_sequences=True,input_shape=(lookback,1)),
-        LSTM(16),
-        Dense(1)
-    ])
-
-    lstm.compile(optimizer="adam",loss="mse")
-
-    lstm.fit(X,y,epochs=40,batch_size=16,verbose=0)
-
-    seq=scaled[-lookback:]
-
-    lstm_preds=[]
-
-    for _ in range(forecast_days):
-
-        p=lstm.predict(seq.reshape(1,lookback,1),verbose=0)[0]
-
-        lstm_preds.append(p)
-
-        seq=np.append(seq[1:],p)
-
-    lstm_vals=scaler.inverse_transform(lstm_preds).flatten()
-
-    # -----------------------
-    # TREND MODEL
-    # -----------------------
-
-    growth = np.log(series / series.shift(1)).dropna()
-
-    avg_growth = growth.mean()
+    avg_growth = growth.mean()*0.5
 
     last_val = series.iloc[-1]
 
     trend_vals=[]
 
-    for _ in range(forecast_days):
+    for i in range(forecast_days):
 
-        last_val = last_val * (1 + avg_growth*0.6)
+        damping = 1/(1+0.015*i)
+
+        last_val = last_val*(1+avg_growth*damping)
 
         trend_vals.append(last_val)
 
-    # -----------------------
-    # ENSEMBLE
-    # -----------------------
+    # ensemble
 
-    future_vals = (
-        0.5*prophet_vals +
-        0.3*lstm_vals +
-        0.2*np.array(trend_vals)
-    )
+    future_vals = 0.6*prophet_vals + 0.4*np.array(trend_vals)
 
     future_vals = pd.Series(future_vals).rolling(3,min_periods=1).mean().values
 
@@ -255,9 +254,10 @@ else:
 
     history = data.set_index("ds")["y"]
 
-# -----------------------------------------------------
+
+# --------------------------------------------------
 # GRAPH
-# -----------------------------------------------------
+# --------------------------------------------------
 
 fig = go.Figure()
 
@@ -286,18 +286,21 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# -----------------------------------------------------
+
+# --------------------------------------------------
 # FORECAST TABLE
-# -----------------------------------------------------
+# --------------------------------------------------
 
 last_actual = history.iloc[-1]
 
 growth_pct = ((future_vals-last_actual)/last_actual)*100
 
 table = pd.DataFrame({
+
     "Date":future_dates,
     "Forecast":future_vals,
     "Growth %":growth_pct
+
 })
 
 st.dataframe(table,use_container_width=True)
@@ -305,6 +308,5 @@ st.dataframe(table,use_container_width=True)
 max_idx = np.argmax(future_vals)
 
 st.write(
-    f"Maximum projected day: {future_dates.iloc[max_idx].date()} | "
-    f"Value: {round(future_vals[max_idx],2)}"
+    f"Maximum projected day: {future_dates.iloc[max_idx].date()} | Value: {round(future_vals[max_idx],2)}"
 )
